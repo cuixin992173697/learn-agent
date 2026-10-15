@@ -31,8 +31,9 @@ def main() -> None:
 
         # 1. 把用户的话加进历史
         messages.append(HumanMessage(content=user_input))
-        # 2. 把整段历史发给模型，拿到回复
+        # 2. 把整段历史发给模型，拿到回复,等模型全想完才一次性输出 ，返回完整的 AIMessage
         response = llm.invoke(messages)
+
         # 3. 打印回复key
         print(f"GLM: {response.content}\n")
         # 4. 把回复也加进历史，下一轮就能接着聊
