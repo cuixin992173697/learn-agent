@@ -7,7 +7,11 @@ authors = [
     { name = "cuixin", email = "992173697@qq.com" }
 ]
 requires-python = ">=3.14"
-dependencies = []
+dependencies = [
+    "langchain",
+    "langchain-openai",
+    "python-dotenv>=1.2.4",
+]
 
 [project.scripts]
 learn-agent = "learn_agent:main"
