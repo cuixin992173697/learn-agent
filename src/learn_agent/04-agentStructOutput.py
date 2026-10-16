@@ -1,15 +1,15 @@
 import os
-import re
-from datetime import datetime
+import sys
+from typing import Literal
+
+# Windows 控制台默认 GBK，遇到 emoji/中文会崩；切到 utf-8
+sys.stdout.reconfigure(encoding="utf-8")
 
 from dotenv import load_dotenv
 load_dotenv()
 
-
 from langchain.chat_models import init_chat_model
-from langchain_core.tools import tool
-from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
-from langchain.agents import create_agent
+from pydantic import BaseModel, Field, ValidationError
 
 API_KEY = os.environ["ZHIPU_API_KEY"]
 
@@ -21,59 +21,64 @@ llm = init_chat_model(
 )
 
 
-# ===== 1. 定义工具：用 @tool 把普通函数变成 LLM 能调用的工具 =====
-@tool
-def get_current_time() -> str:
-    """获取当前的日期和时间。当用户问现在几点、今天日期时使用。"""
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+# ===== 1. 用 Pydantic 定义"输出结构" =====
+# 普通聊天模型回的是一坨自由文字；结构化输出让它回"固定形状的数据"，方便程序直接用。
+# 每个字段都带 description，作用跟 @tool 的 docstring 一样：告诉模型这个字段该填什么。
+class Review(BaseModel):
+    """从一条商品评论里提取的结构化信息"""
 
-@tool
-def calculate(expression: str) -> str:
-    """计算数学表达式，例如 '3 + 5 * 2'。只支持数字和 + - * / ( )。"""
-    if not re.fullmatch(r"[\d\s+\-*/().]+", expression):
-        return "只支持数字和 + - * / ( ) 运算符"
-    try:
-        return str(eval(expression, {"__builtins__": {}}, {}))
-    except Exception as e:
-        return f"计算失败：{e}"
+    product: str = Field(description="评论里提到的商品名称")
+    rating: int = Field(description="评分，1~5 的整数", ge=1, le=5)  # ge/le 限制范围
+    sentiment: Literal["好评", "中评", "差评"] = Field(description="情感倾向，只能三选一")
+    summary: str = Field(description="用一句话总结这条评论")
 
 
-# ===== 2. 组装成 Agent =====
-agent = create_agent(
-    llm,
-    tools=[calculate, get_current_time],
-    system_prompt="你是一个乐于助人的中文助手。当涉及时间或数学计算时，请主动调用对应工具，不要凭空猜测。",
-)
+# ===== 2. 把普通 llm 包成"结构化输出模型" =====
+# with_structured_output 返回一个新模型：调它 .invoke 直接得到 Review 对象，而不是一坨文字。
+# method="function_calling" 是关键：glm-5.2 默认走 JSON Schema 模式容易回纯文本，
+#   改成函数调用方式（它本来就支持 @tool）就稳了。不同模型要试不同 method。
+struct_llm = llm.with_structured_output(Review, method="function_calling")
+
+
+# ===== 3. 固定例子：同一结构、不同输入 =====
+EXAMPLES = [
+    "刚买的蓝牙耳机音质超棒，续航也长，必须给5分，强烈推荐！",
+    "这款保温杯居然漏水，做工太差了，只能给1分，很失望。",
+    "鼠标手感一般，凑合用吧，3分。",
+]
+
+
+def extract_and_print(text: str) -> None:
+    """对一条评论做结构化提取并打印结果。"""
+    result = struct_llm.invoke(text)            # 返回的是 Review 对象，不是字符串
+    print(f"  → 商品：{result.product}")
+    print(f"  → 评分：{result.rating}（类型 {type(result.rating).__name__}）")  # 注意是 int 不是 str
+    print(f"  → 情感：{result.sentiment}")
+    print(f"  → 总结：{result.summary}")
+    print(f"  → 整体 dict：{result.model_dump()}\n")   # model_dump() 把对象转回普通字典
+
 
 def main() -> None:
-    print("开始和 Agent 对话（输入 quit 退出）\n")
-    messages = []
+    print("===== 固定例子：看看结构化输出长啥样 =====\n")
+    for text in EXAMPLES:
+        print(f"评论：{text}")
+        extract_and_print(text)
 
+    print("===== 互动：你输入一条评论，看它怎么提取 =====")
+    print("（输入 quit 退出）\n")
     while True:
-        user_input = input("你：").strip()
+        user_input = input("评论：").strip()
         if user_input.lower() in ("quit", "exit", "q"):
             print("再见！")
             break
         if not user_input:
             continue
+        try:
+            extract_and_print(user_input)
+        except ValidationError as e:
+            # 结构化输出会"校验"结果：模型填的字段不合规（比如评分给了6）就会被拦下
+            print(f"  ⚠️ 模型返回的数据没通过校验：\n{e}\n")
 
-        messages.append(HumanMessage(content=user_input))
-        start = len(messages) # 记住当前位置等下只打印新增的步骤
-
-        # 触发 agent 的 ReAct 循环: 它会决定要不要调用工具
-        result = agent.invoke({"messages": messages})
-        messages = result["messages"]
-
-        # 打印中间过程，看 agent 调了什么工具、拿到什么结果
-        for m in messages[start:]:
-            if isinstance(m, AIMessage) and getattr(m, "tool_calls", None):
-                for tc in m.tool_calls:
-                    print(f"  🔧 调用工具 {tc['name']}，参数: {tc['args']}")
-            elif isinstance(m, ToolMessage):
-                print(f"  📋 工具返回: {m.content}")
-
-        # 最后一条消息就是最终回复
-        print(f"Agent: {messages[-1].content}\n")
 
 if __name__ == "__main__":
     main()
