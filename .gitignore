@@ -1,2 +1,24 @@
+# IDE
 .idea/
+.vscode/
+
+# 环境变量
 .env
+
+# Python 字节码缓存（自动生成，不该提交）
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 虚拟环境
+.venv/
+venv/
+env/
+
+# 类型检查 / lint 缓存
+.mypy_cache/
+.ruff_cache/
+
+# 操作系统
+.DS_Store
+Thumbs.db
